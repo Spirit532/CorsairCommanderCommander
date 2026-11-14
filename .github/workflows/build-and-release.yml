@@ -1,0 +1,60 @@
+# Builds on every push and pull request. On a push to main it publishes release vX.Y (version from
+# CMakeLists.txt) unless that release already exists, so bump the version to ship a new one.
+name: Build and release
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        shell: bash
+        run: |
+          version=$(sed -nE 's/^project\(CorsairCommanderCommander VERSION ([0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: cmake -S . -B build -A x64
+      - run: cmake --build build --config Release
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "CorsairCommanderCommander-${{ steps.version.outputs.version }}-windows-x64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item build/Release/CorsairCommanderCommander.exe, README.md, LICENSE, THIRD_PARTY_NOTICES.md $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: "*.zip"
+
+  release:
+    needs: windows
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.windows.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists. Bump the version in CMakeLists.txt to publish a new one."
+            exit 0
+          fi
+          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "CorsairCommanderCommander $VERSION" --generate-notes
